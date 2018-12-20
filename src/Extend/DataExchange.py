@@ -17,25 +17,30 @@
 
 import os
 
-from OCC.Core.TopoDS import TopoDS_Shape
+from OCC.Core.TopoDS import TopoDS_Shape, TopoDS_Iterator
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
 from OCC.Core.StlAPI import StlAPI_Reader, StlAPI_Writer
 from OCC.Core.BRep import BRep_Builder
-from OCC.Core.TopoDS import TopoDS_Compound
+from OCC.Core.TopoDS import TopoDS_Compound, TopoDS_Solid
 from OCC.Core.IGESControl import IGESControl_Reader, IGESControl_Writer
 from OCC.Core.STEPControl import STEPControl_Reader, STEPControl_Writer, STEPControl_AsIs
 from OCC.Core.Interface import Interface_Static_SetCVal
 from OCC.Core.IFSelect import IFSelect_RetDone, IFSelect_ItemsByEntity
 from OCC.Core.TDocStd import TDocStd_Document
 from OCC.Core.XCAFDoc import (XCAFDoc_DocumentTool_ShapeTool,
-                              XCAFDoc_DocumentTool_ColorTool)
+                              XCAFDoc_DocumentTool_ColorTool,
+                              XCAFDoc_ColorGen,
+                              XCAFDoc_ColorSurf,
+                              XCAFDoc_ColorCurv)
 from OCC.Core.STEPCAFControl import STEPCAFControl_Reader
 from OCC.Core.TDF import TDF_LabelSequence, TDF_Label, TDF_Tool
 from OCC.Core.TDataStd import TDataStd_Name, TDataStd_Name_GetID
 from OCC.Core.TCollection import TCollection_ExtendedString, TCollection_AsciiString
-from OCC.Core.Quantity import Quantity_Color
+from OCC.Core.Quantity import Quantity_Color, Quantity_TOC_RGB
 from OCC.Core.TopLoc import TopLoc_Location
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
+from OCC.Core.XCAFPrs import xcafprs, XCAFPrs_DataMapOfShapeStyle
+from OCC.Core.TopAbs import TopAbs_COMPOUND
 
 from OCC.Extend.TopologyUtils import TopologyExplorer
 
@@ -149,31 +154,12 @@ def read_step_file_with_names_colors(filename):
         return "No Name"
 
     def _get_sub_shapes(lab, loc):
-        #global cnt, lvl
-        #cnt += 1
-        #print("\n[%d] level %d, handling LABEL %s\n" % (cnt, lvl, _get_label_name(lab)))
-        #print()
-        #print(lab.DumpToString())
-        #print()
-        #print("Is Assembly    :", shape_tool.IsAssembly(lab))
-        #print("Is Free        :", shape_tool.IsFree(lab))
-        #print("Is Shape       :", shape_tool.IsShape(lab))
-        #print("Is Compound    :", shape_tool.IsCompound(lab))
-        #print("Is Component   :", shape_tool.IsComponent(lab))
-        #print("Is SimpleShape :", shape_tool.IsSimpleShape(lab))
-        #print("Is Reference   :", shape_tool.IsReference(lab))
-
-        #users = TDF_LabelSequence()
-        #users_cnt = shape_tool.GetUsers(lab, users)
-        #print("Nr Users       :", users_cnt)
-
+        
         l_subss = TDF_LabelSequence()
         shape_tool.GetSubShapes(lab, l_subss)
         #print("Nb subshapes   :", l_subss.Length())
         l_comps = TDF_LabelSequence()
         shape_tool.GetComponents(lab, l_comps)
-        #print("Nb components  :", l_comps.Length())
-        #print()
 
         if shape_tool.IsAssembly(lab):
             l_c = TDF_LabelSequence()
@@ -185,21 +171,7 @@ def read_step_file_with_names_colors(filename):
                     label_reference = TDF_Label()
                     shape_tool.GetReferredShape(label, label_reference)
                     loc = shape_tool.GetLocation(label)
-                    #print("    loc          :", loc)
-                    #trans = loc.Transformation()
-                    #print("    tran form    :", trans.Form())
-                    #rot = trans.GetRotation()
-                    #print("    rotation     :", rot)
-                    #print("    X            :", rot.X())
-                    #print("    Y            :", rot.Y())
-                    #print("    Z            :", rot.Z())
-                    #print("    W            :", rot.W())
-                    #tran = trans.TranslationPart()
-                    #print("    translation  :", tran)
-                    #print("    X            :", tran.X())
-                    #print("    Y            :", tran.Y())
-                    #print("    Z            :", tran.Z())
-
+                   
                     locs.append(loc)
                     #print(">>>>")
                     #lvl += 1
@@ -208,84 +180,48 @@ def read_step_file_with_names_colors(filename):
                     #print("<<<<")
                     locs.pop()
 
-        elif shape_tool.IsSimpleShape(lab):
+        elif shape_tool.IsSimpleShape(lab):  
             #print("\n########  simpleshape label :", lab)
             shape = shape_tool.GetShape(lab)
-            #print("    all ass locs   :", locs)
-
+            
             loc = TopLoc_Location()
             for i in range(len(locs)):
                 #print("    take loc       :", locs[i])
                 loc = loc.Multiplied(locs[i])
 
-            #trans = loc.Transformation()
-            #print("    FINAL loc    :")
-            #print("    tran form    :", trans.Form())
-            #rot = trans.GetRotation()
-            #print("    rotation     :", rot)
-            #print("    X            :", rot.X())
-            #print("    Y            :", rot.Y())
-            #print("    Z            :", rot.Z())
-            #print("    W            :", rot.W())
-            #tran = trans.TranslationPart()
-            #print("    translation  :", tran)
-            #print("    X            :", tran.X())
-            #print("    Y            :", tran.Y())
-            #print("    Z            :", tran.Z())
-            shape = BRepBuilderAPI_Transform(shape, loc.Transformation()).Shape()
+            the_prs = xcafprs()
+            astyle= XCAFPrs_DataMapOfShapeStyle()
+            the_prs.CollectStyleSettings(lab, TopLoc_Location(), astyle)
+            number_of_subshapes = l_subss.Length()
+            if number_of_subshapes > 0:
+                for i in range(l_subss.Length()):
+                    lab = l_subss.Value(i+1)
+                    #print("\n########  simpleshape subshape label :", lab)
+                    shape_sub = shape_tool.GetShape(lab)
+                    color = Quantity_Color(0.5, 0.5, 0.5, Quantity_TOC_RGB)
+                    if astyle.IsBound(shape_sub):
+                        r = astyle.Find(shape_sub)
+                        if r.IsSetColorSurf():
+                            color = r.GetColorSurf()
+                        elif r.IsSetColorCurv():
+                            color = r.GetColorCurv()
+                    shape_sub = BRepBuilderAPI_Transform(shape_sub, loc.Transformation()).Shape()
+                    output_shapes.append([shape_sub, "popo", color])
+            else:
+                print(type(shape), astyle.IsBound(shape))
+                if type(shape)==TopoDS_Solid:
+                    print("Solid!!")
+                    color = Quantity_Color(0.5, 0.5, 0.5, Quantity_TOC_RGB)
+                    if astyle.IsBound(shape):
+                        r = astyle.Find(shape)
+                        color = r.GetColorSurf()
+                    shape = BRepBuilderAPI_Transform(shape, loc.Transformation()).Shape()
+                    output_shapes.append([shape, "popo", color])
 
-            c = Quantity_Color()
-            colorSet = False
-            if (color_tool.GetInstanceColor(shape, 0, c) or
-                    color_tool.GetInstanceColor(shape, 1, c) or
-                    color_tool.GetInstanceColor(shape, 2, c)):
-                for i in (0, 1, 2):
-                    color_tool.SetInstanceColor(shape, i, c)
-                colorSet = True
-                n = c.Name(c.Red(), c.Green(), c.Blue())
-                #print('    instance color Name & RGB: ', c, n, c.Red(), c.Green(), c.Blue())
-
-            if not colorSet:
-                if (color_tool.GetColor(lab, 0, c) or
-                        color_tool.GetColor(lab, 1, c) or
-                        color_tool.GetColor(lab, 2, c)):
-                    for i in (0, 1, 2):
-                        color_tool.SetInstanceColor(shape, i, c)
-
-                    n = c.Name(c.Red(), c.Green(), c.Blue())
-                    print('    shape color Name & RGB: ', c, n, c.Red(), c.Green(), c.Blue())
-
-                #n = c.Name(c.Red(), c.Green(), c.Blue())
-                #print('    shape color Name & RGB: ', c, n, c.Red(), c.Green(), c.Blue())
-
-            for i in range(l_subss.Length()):
-                lab = l_subss.Value(i+1)
-                print("\n########  simpleshape subshape label :", lab)
-                shape_sub = shape_tool.GetShape(lab)
-
-                c = Quantity_Color()
-                colorSet = False
-                if (color_tool.GetInstanceColor(shape_sub, 0, c) or
-                        color_tool.GetInstanceColor(shape_sub, 1, c) or
-                        color_tool.GetInstanceColor(shape_sub, 2, c)):
-                    for i in (0, 1, 2):
-                        color_tool.SetInstanceColor(shape_sub, i, c)
-                    colorSet = True
-                    n = c.Name(c.Red(), c.Green(), c.Blue())
-                    #print('    instance color Name & RGB: ', c, n, c.Red(), c.Green(), c.Blue())
-
-                if not colorSet:
-                    if (color_tool.GetColor(lab, 0, c) or
-                            color_tool.GetColor(lab, 1, c) or
-                            color_tool.GetColor(lab, 2, c)):
-                        for i in (0, 1, 2):
-                            color_tool.SetInstanceColor(shape, i, c)
-
-                        n = c.Name(c.Red(), c.Green(), c.Blue())
-                        #print('    shape color Name & RGB: ', c, n, c.Red(), c.Green(), c.Blue())
-
-            output_shapes.append([shape, _get_label_name(lab), c])
-
+                else:
+                    print("Ou la la !!!")
+                #shape = BRepBuilderAPI_Transform(shape, loc.Transformation()).Shape()
+                #output_shapes.append([shape, "popo", c])
 
     def _get_shapes():
         labels = TDF_LabelSequence()
@@ -296,9 +232,10 @@ def read_step_file_with_names_colors(filename):
         print()
         print("Number of shapes at root :", labels.Length())
         print()
-        root = labels.Value(1)
+        for i in range(labels.Length()):
+            root = labels.Value(i+1)
 
-        _get_sub_shapes(root, None)
+            _get_sub_shapes(root, None)
     _get_shapes()
     return output_shapes
 
@@ -428,6 +365,7 @@ def write_iges_file(a_shape, filename):
         raise AssertionError("Not done.")
     if not os.path.isfile(filename):
         raise IOError("File not written to disk.")
+
 
 if __name__ == "__main__":
     from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeSphere
